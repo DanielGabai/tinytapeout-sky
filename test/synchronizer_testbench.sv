@@ -18,7 +18,7 @@ module synchronizer_testbench;
     integer fail_count;
 
     // Device Under Test (DUT)
-    synchronizer #(.WIDTH(WIDTH)) uut (
+    synchronizer #(.WIDTH(WIDTH), .DEBOUNCE_CYCLES(1)) uut (
         .clk      (clk),
         .rst_n    (rst_n),
         .async_in (async_in),
@@ -97,36 +97,40 @@ module synchronizer_testbench;
         check_value("sync_out after reset", 32'd0, 32'(sync_out));
         $display("");
 
-        // TEST 2: Two-cycle propagation delay
-        // A new value must pass through 2 FFs before appearing on sync_out
-        $display("[TEST 2] Two-cycle propagation delay");
+        // TEST 2: Three-cycle propagation delay
+        // A new value must pass through 2 sync FFs + 1 debounce cycle
+        $display("[TEST 2] Three-cycle propagation delay");
         reset_dut();
         async_in = 8'hA5;
         @(posedge clk); @(negedge clk);  // Cycle 1: async_in -> stage1
         check_value("sync_out after 1 cycle (should still be 0)", 32'd0, 32'(sync_out));
-        @(posedge clk); @(negedge clk);  // Cycle 2: stage1 -> sync_out
-        check_value("sync_out after 2 cycles", 32'h000000A5, 32'(sync_out));
+        @(posedge clk); @(negedge clk);  // Cycle 2: stage1 -> stage2
+        check_value("sync_out after 2 cycles (should still be 0)", 32'd0, 32'(sync_out));
+        @(posedge clk); @(negedge clk);  // Cycle 3: debounce accepts → sync_out
+        check_value("sync_out after 3 cycles", 32'h000000A5, 32'(sync_out));
         $display("");
 
-        // TEST 3: Input change propagates after two cycles
+        // TEST 3: Input change propagates after three cycles
         $display("[TEST 3] Input change propagates correctly");
         reset_dut();
         async_in = 8'hFF;
-        wait_cycles(2);
+        wait_cycles(3);
         check_value("sync_out stable at 0xFF", 32'h000000FF, 32'(sync_out));
 
         async_in = 8'h00;          // Change input back to 0
         @(posedge clk); @(negedge clk);
         check_value("sync_out still 0xFF after 1 cycle", 32'h000000FF, 32'(sync_out));
         @(posedge clk); @(negedge clk);
-        check_value("sync_out now 0x00 after 2 cycles", 32'd0, 32'(sync_out));
+        check_value("sync_out still 0xFF after 2 cycles", 32'h000000FF, 32'(sync_out));
+        @(posedge clk); @(negedge clk);
+        check_value("sync_out now 0x00 after 3 cycles", 32'd0, 32'(sync_out));
         $display("");
 
         // TEST 4: Active-low reset overrides input mid-stream
         $display("[TEST 4] Reset mid-stream clears output");
         reset_dut();
         async_in = 8'hC3;
-        wait_cycles(2);
+        wait_cycles(3);
         check_value("sync_out stable at 0xC3", 32'h000000C3, 32'(sync_out));
 
         rst_n = 0;                 // Assert reset while data is flowing
@@ -140,11 +144,11 @@ module synchronizer_testbench;
         reset_dut();
 
         async_in = 8'hFF;
-        wait_cycles(2);
+        wait_cycles(3);
         check_value("sync_out all-ones", 32'h000000FF, 32'(sync_out));
 
         async_in = 8'h00;
-        wait_cycles(2);
+        wait_cycles(3);
         check_value("sync_out all-zeros", 32'd0, 32'(sync_out));
         $display("");
 
@@ -156,7 +160,7 @@ module synchronizer_testbench;
         #1; async_in = 8'h55;     // Toggle before first clock edge
         #1; async_in = 8'hAA;
         #1; async_in = 8'h7F;     // Settle on this value before posedge
-        wait_cycles(2);
+        wait_cycles(3);
         check_value("sync_out settles to 0x7F", 32'h0000007F, 32'(sync_out));
         $display("");
 

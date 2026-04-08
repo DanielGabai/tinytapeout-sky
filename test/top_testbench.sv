@@ -9,6 +9,13 @@ module top_testbench;
     // Cycles spent in S_SHOW_SEQ or S_SHOW_GAP before delay fires: 5 (counter latency + 1 FSM cycle)
     localparam DELAY_PHASE = 5 + 1; // show or gap = 5 cycles in state + 1 SEQ_DONE/GAP_DONE cycle
 
+    // Debounce & synchronizer latency
+    // DEBOUNCE_CYCLES=1 means "accept after 1 stable cycle" (minimum).
+    // Total latency from ui_in change to sync_out change:
+    //   2 (sync FFs) + 1 (debounce acceptance) = 3 cycles
+    localparam TB_DEBOUNCE = 1;
+    localparam SYNC_LATENCY = 3; // 2 sync + TB_DEBOUNCE
+
     // 7-seg constants (from top.sv)
     localparam logic [6:0] SEG_C   = 7'b0111001;
     localparam logic [6:0] SEG_F   = 7'b1110001;
@@ -33,7 +40,7 @@ module top_testbench;
     logic [2:0] tb_exp [0:15];
 
     // DUT
-    tt_um_memory_game_top dut (
+    tt_um_memory_game_top #(.DEBOUNCE_CYCLES(TB_DEBOUNCE)) dut (
         .clk     (clk),
         .rst_n   (rst_n),
         .ui_in   (ui_in),
@@ -113,27 +120,34 @@ module top_testbench;
     endtask
 
     // Simulate a falling-edge press on the submit button (ui_in[6]).
-    // Returns with the FSM in S_CHECK_INPUT (ready for the caller to advance one more cycle).
+    // Signal path: ui_in[6] → sync+debounce (SYNC_LATENCY) → edge_detector (2 FFs) → pulse
+    // After this task, FSM has latched S_CHECK_INPUT.
     task press_submit();
-        @(posedge clk); ui_in[6] <= 1;  // raise
-        @(posedge clk); ui_in[6] <= 0;  // lower
-        @(posedge clk);                   // edge_detector: current=0, prior=1 → pulse=1
-        @(posedge clk);                   // FSM next_state=S_CHECK_INPUT latched
-        @(posedge clk);                   // FSM now in S_CHECK_INPUT
+        @(posedge clk); ui_in[6] <= 1;           // raise submit switch
+        wait_cycles(SYNC_LATENCY);                // wait for high to reach submit_btn
+        @(posedge clk); ui_in[6] <= 0;            // lower submit switch
+        @(posedge clk);                           // edge_detector: current=1, prior=0 (no pulse yet)
+        wait_cycles(SYNC_LATENCY - 1);            // wait for low to reach submit_btn
+        @(posedge clk);                           // edge_detector: current=0, prior=1 → pulse=1
+        @(posedge clk);                           // FSM latches next_state
+        @(posedge clk);                           // FSM now in S_CHECK_INPUT
     endtask
 
     // Run the startup sequence: reset → seed load → fill mem → load delay → S_SHOW_SEQ
-    // After this task, the FSM is in S_SHOW_SEQ displaying digit 0 of round 0.
+    // After this task, the FSM is in S_ROUND_START, about to enter S_SHOW_SEQ.
     task startup();
         reset_dut();
         // Set seed on ui_in[5:0] and assert start_btn
         ui_in <= {1'b1, 1'b0, SEED};     // [7]=start, [6]=submit=0, [5:0]=seed
+        wait_cycles(SYNC_LATENCY);         // Wait for sync+debounce propagation
         @(posedge clk);                    // S_RST sees start_btn=1 → next: S_LOAD_SEED
         @(posedge clk);                    // S_LOAD_SEED: lfsr_load latches SEED
         // Now in S_FILL_MEM. Switch delay bits (ui_in[4:0]) before S_LOAD_DELAY latches them.
         // SEED[4:0] = 5'b01011 = 11 which would be far too slow, so override:
         ui_in[4:0] <= DELAY_BITS;          // adj_delay=2 for fast simulation
         wait_cycles(16);                   // 16 S_FILL_MEM cycles (index 0..15 written)
+        // Need extra cycles for delay bits to propagate through sync before S_LOAD_DELAY latches
+        wait_cycles(SYNC_LATENCY);
         @(posedge clk);                    // S_LOAD_DELAY: latches adj_delay, ptr_reset
         @(posedge clk);                    // S_ROUND_START: ptr_reset
         // FSM now enters S_SHOW_SEQ on the next posedge — delay timer starts there
@@ -218,12 +232,9 @@ module top_testbench;
         $display("[TEST 2] Startup Sequence (LOAD_SEED → FILL_MEM → LOAD_DELAY)");
         // -----------------------------------------------------------------
         startup();
-        // After startup(), FSM should be about to enter S_SHOW_SEQ.
-        // Display should still be blank through ROUND_START.
-        // We already consumed ROUND_START in startup()'s last wait_cycles.
-        // Check that we haven't crashed/locked up by confirming display is non-garbage.
+        // After startup(), FSM enters S_SHOW_SEQ on the next posedge.
         // In S_SHOW_SEQ, seg_mode=01, so uo_out = {1'b0, decoder(tb_exp[0])}.
-        wait_cycles(1); // give SHOW_SEQ one cycle to be stable
+        wait_cycles(1); // enter S_SHOW_SEQ
         check_value("uo_out shows digit 0 (seg_mode=01)",
                     {1'b0, seg_decode(tb_exp[0])},
                     uo_out);
@@ -247,13 +258,7 @@ module top_testbench;
         $display("[TEST 4] Round 1 — Gap Between Digits Visible");
         // -----------------------------------------------------------------
         // Coming from S_ROUND_START (Round 1, round_ptr=1).
-        $display("  [DBG before wait1] t=%0t uo=%0h fsm_state=%0d idx=%0d rnd=%0d adj=%0d ctr=%0d fin=%0d",
-            $time, uo_out, dut.fsm.state, dut.index_ptr, dut.round_ptr,
-            dut.delay.adj_delay, dut.delay.counter, dut.delay.finish);
         wait_cycles(1); // S_ROUND_START → S_SHOW_SEQ
-        $display("  [DBG after wait1] t=%0t uo=%0h fsm_state=%0d idx=%0d rnd=%0d adj=%0d ctr=%0d fin=%0d",
-            $time, uo_out, dut.fsm.state, dut.index_ptr, dut.round_ptr,
-            dut.delay.adj_delay, dut.delay.counter, dut.delay.finish);
         // In S_SHOW_SEQ showing digit 0
         check_value("uo_out shows digit 0 in round 1",
                     {1'b0, seg_decode(tb_exp[0])},
@@ -311,8 +316,9 @@ module top_testbench;
         $display("[TEST 6] Global Reset from LOSE State");
         // -----------------------------------------------------------------
         ui_in[7] <= 0;  // pull start_btn low → global reset
-        @(posedge clk);
-        @(posedge clk);
+        wait_cycles(SYNC_LATENCY);        // sync+debounce propagation
+        @(posedge clk);                   // FSM sees !start_btn → S_RST
+        @(posedge clk);                   // outputs settle
         check_value("uo_out blank after global reset", 0, uo_out[6:0]);
         // Confirm it stays blank without start_btn
         wait_cycles(3);
@@ -342,8 +348,9 @@ module top_testbench;
         $display("[TEST 8] Global Reset from WIN State");
         // -----------------------------------------------------------------
         ui_in[7] <= 0;
-        @(posedge clk);
-        @(posedge clk);
+        wait_cycles(SYNC_LATENCY);        // sync+debounce propagation
+        @(posedge clk);                   // FSM → S_RST
+        @(posedge clk);                   // outputs settle
         check_value("uo_out blank after reset from WIN", 0, uo_out[6:0]);
         $display("");
 
@@ -357,8 +364,9 @@ module top_testbench;
                     uo_out);
         // Pull start_btn low mid-display
         ui_in[7] <= 0;
-        @(posedge clk);
-        @(posedge clk);
+        wait_cycles(SYNC_LATENCY);        // sync+debounce propagation
+        @(posedge clk);                   // FSM → S_RST
+        @(posedge clk);                   // outputs settle
         check_value("uo_out blank immediately after mid-game reset", 0, uo_out[6:0]);
         $display("");
 
@@ -396,7 +404,7 @@ module top_testbench;
 
     // Timeout watchdog — increase if running full WIN test (TEST 7) is slow
     initial begin
-        #10_000_000;
+        #50_000_000;
         $display("ERROR: Simulation timeout!");
         $finish;
     end

@@ -29,7 +29,9 @@
    3) 
    */
 
-module tt_um_memory_game_top (
+module tt_um_memory_game_top #(
+    parameter int DEBOUNCE_CYCLES = 500_000  // ~10ms at 50MHz; override in testbench
+) (
     input  logic       clk,
     input  logic       rst_n,
     input  logic [7:0] ui_in,    // Input Switches
@@ -56,7 +58,7 @@ module tt_um_memory_game_top (
     // Synchronized switch inputs
     logic [7:0] ui_in_sync;
 
-    synchronizer #(.WIDTH(8)) sw_sync (
+    synchronizer #(.WIDTH(8), .DEBOUNCE_CYCLES(DEBOUNCE_CYCLES)) sw_sync (
         .clk      (clk),
         .rst_n    (rst_n),
         .async_in (ui_in),
