@@ -42,6 +42,9 @@ module tt_um_memory_game_top #(
     output logic [7:0] uio_out,
     output logic [7:0] uio_oe,
     input  logic       ena       // always 1 when design is powered
+    inout  wire        VPWR,
+    inout  wire        VGND
+
 );
 
     // Unused
